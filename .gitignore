@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+
+# Scan output holds unpublished vulnerabilities: never commit it.
+*-findings/
+bmo-filing.log
+
+# Written by the dev container.
+.host-git-identity
