@@ -8,10 +8,13 @@
 Usage: file_bmo_bug.py --meta-bug <bug id> [--dry-run] [--limit N] <scan directory>
 
 The scan directory is the root of a scan: its README.md starts
-"# <project> — findings of scan <scan-id>" and gives the number of findings
-at the top level and in each subdirectory it lists (already-public-upstream/,
-bugs-not-security/, ...). Nothing is done unless the findings found match
-those numbers. One run files
+"# <project> — findings of scan <scan-id>" and gives the number of
+vulnerabilities and the number of findings in each subdirectory it lists
+(critical/, high/, medium/, low/, already-public-upstream/,
+bugs-not-security/, ...). The vulnerabilities are the findings in the
+severity subdirectories (critical/ to low/) or, in older scans, directly in
+the scan directory. Nothing is done unless the findings found match those
+numbers. One run files
 
   * the scan's meta bug, "[<scan-id>] ...", which blocks the --meta-bug bug
     (the overall oss-scanner meta bug),
@@ -243,8 +246,11 @@ SCAN_COMMIT_RE = re.compile(
     r"^(?P<repo>\S+) at commit `(?P<commit>[0-9a-f]+)` · (?P<count>\d+) finding",
     re.M,
 )
+# "## Medium: 1 finding(s), in medium/" or
+# "## Not security: 12 ordinary bug(s), in [bugs-not-security/](...)".
 SCAN_GROUP_RE = re.compile(
-    r"^## (?P<title>[^:\n]+): (?P<count>\d+) [^\n]*?\bin \[(?P<dir>[^\]/\n]+)/?\]",
+    r"^## (?P<title>[^:\n]+): (?P<count>\d+) [^\n]*?\bin "
+    r"(?:\[(?P<linked>[^\]/\n]+)/?\]|(?P<plain>[^\s\[\]/]+)/)",
     re.M)
 
 
@@ -254,8 +260,12 @@ def parse_scan(text):
     commit = SCAN_COMMIT_RE.search(text)
     if not title or not commit:
         return None
-    groups = [{"title": m["title"], "count": int(m["count"]), "dir": m["dir"]}
-              for m in SCAN_GROUP_RE.finditer(text)]
+    groups = []
+    for m in SCAN_GROUP_RE.finditer(text):
+        directory = m["linked"] or m["plain"]
+        groups.append({"title": m["title"], "count": int(m["count"]), "dir": directory,
+                       # Its findings are vulnerabilities, part of the count.
+                       "severity": directory in RATING_KEYWORDS})
     return {
         "project": title["project"],
         "id": title["scan"],
@@ -928,19 +938,29 @@ class AuditLog:
 
 def check_counts(scan, findings):
     """Problems with the findings found against the README's numbers."""
-    expected = {"": ("vulnerabilities at the top level", scan["count"])}
+    expected = {}
     for group in scan["groups"]:
         expected[group["dir"]] = (f"findings in {group['dir']}/", group["count"])
     found = {}
     for finding in findings:
         found[finding["dir"]] = found.get(finding["dir"], 0) + 1
     errors = []
+    # The vulnerabilities: those in the severity subdirectories and, in older
+    # scans, those directly in the scan directory.
+    severity_dirs = [g["dir"] for g in scan["groups"] if g["severity"]]
+    vulnerabilities = sum(found.get(d, 0) for d in [""] + severity_dirs)
+    if vulnerabilities != scan["count"]:
+        where = "at the top level"
+        if severity_dirs:
+            where = "in " + ", ".join(f"{d}/" for d in severity_dirs) + " and " + where
+        errors.append(f"README.md says {scan['count']} vulnerabilities {where}, "
+                      f"there are {vulnerabilities}")
     for directory, (what, count) in expected.items():
         if found.get(directory, 0) != count:
             errors.append(f"README.md says {count} {what}, there are "
                           f"{found.get(directory, 0)}")
     for directory, count in found.items():
-        if directory not in expected:
+        if directory and directory not in expected:
             errors.append(f"{directory}/: {count} finding(s) README.md does not list")
     return errors
 

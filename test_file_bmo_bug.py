@@ -785,6 +785,39 @@ class FilerTests(unittest.TestCase):
                       message)
         self.assertIn("unlisted/: 1 finding(s) README.md does not list", message)
 
+    def use_severity_folders(self, readme_count=2):
+        """Lay the scan out as newer scans are: the vulnerabilities in
+        severity folders, listed without a link."""
+        (self.scan_dir / "high").mkdir()
+        self.finding.rename(self.scan_dir / "high" / "ANT-2026-HIGH1")
+        self.make_finding("ANT-2026-MED1", "medium", "medium")
+        (self.scan_dir / "README.md").write_text(SCAN_README.replace(
+            "· 1 finding(s)", f"· {readme_count} finding(s)").replace(
+            "## Already public upstream",
+            "## High: 1 finding(s), in high/\n\n| id |\n|---|\n\n"
+            "## Medium: 1 finding(s), in medium/\n\n| id |\n|---|\n\n"
+            "## Already public upstream"))
+
+    def test_severity_folders(self):
+        self.use_severity_folders()
+        scan = filer.load_scan(self.scan_dir)
+        self.assertEqual(scan["counts"], [("Vulnerabilities", 2), ("High", 1),
+                                          ("Medium", 1),
+                                          ("Already public upstream", 1),
+                                          ("Not security", 1)])
+        findings = filer.load_findings(scan)
+        self.assertEqual({f["id"]: f["dir"] for f in findings},
+                         {"ANT-2026-HIGH1": "high", "ANT-2026-MED1": "medium",
+                          "ANT-2026-LOW1": "already-public-upstream",
+                          "ANT-2026-BUG1": "bugs-not-security"})
+
+    def test_severity_folders_must_add_up_to_the_vulnerabilities(self):
+        self.use_severity_folders(readme_count=3)
+        with self.assertRaises(SystemExit) as cm:
+            filer.load_findings(filer.load_scan(self.scan_dir))
+        self.assertIn("README.md says 3 vulnerabilities in high/, medium/ and at the "
+                      "top level, there are 2", str(cm.exception))
+
     # --- Requests
 
     def http_error(self, code, body=b'{"message": "nope"}', headers=None):
